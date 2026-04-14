@@ -5,11 +5,12 @@ declare(strict_types=1);
 namespace LiteMD\Plugins\Mysql;
 
 use LiteMD\Plugin as PluginRegistry;
+use LiteMD\Config;
 
 // ----------------------------------------------------------------------------
 // MySQL plugin. Provides a shared 'database' service that other plugins can
-// use via Plugin::getService('database'). Reads credentials from
-// admin/config.php and manages database creation/deletion.
+// use via Plugin::getService('database'). Reads credentials from the main
+// config.php under plugins.mysql and manages database creation.
 // ----------------------------------------------------------------------------
 class Plugin
 {
@@ -37,8 +38,8 @@ class Plugin
 
     // ----------------------------------------------------------------------------
     // Runs once when the user clicks Install. Receives user-provided DB
-    // credentials from the setup form, writes them to admin/config.php,
-    // and creates the database if it doesn't exist. Returns a status message.
+    // credentials from the setup form, writes them to config.php under
+    // plugins.mysql, and creates the database if it doesn't exist.
     // ----------------------------------------------------------------------------
     public static function setup(array $data = []): string
     {
@@ -48,14 +49,19 @@ class Plugin
         $user = trim((string) ($data['db_user'] ?? 'root')) ?: 'root';
         $pass = (string) ($data['db_pass'] ?? '');
 
-        // Write DB credentials to admin/config.php
-        $configFile = self::configFile();
+        // Write DB credentials to config.php under plugins.mysql
+        $configFile = dirname(__DIR__, 2) . '/config.php';
         $config = is_file($configFile) ? (array) require $configFile : [];
-        $config['DB_HOST'] = $host;
-        $config['DB_NAME'] = $name;
-        $config['DB_USER'] = $user;
-        $config['DB_PASS'] = $pass;
-        self::writeConfig($config);
+        if (!isset($config['plugins'])) {
+            $config['plugins'] = [];
+        }
+        $config['plugins']['mysql'] = [
+            'host' => $host,
+            'name' => $name,
+            'user' => $user,
+            'pass' => $pass,
+        ];
+        self::writeMainConfig($configFile, $config);
 
         // Connect to MySQL (without dbname) to check if the database exists
         $pdo = new \PDO(
@@ -88,12 +94,14 @@ class Plugin
                 'description' => 'Remove DB credentials from config. The database itself is NOT deleted — drop it manually in MySQL if needed.',
                 'destructive' => false,
                 'execute'     => function () {
-                    // Remove DB keys from admin/config.php
-                    $configFile = self::configFile();
+                    // Remove plugins.mysql from config.php
+                    $configFile = dirname(__DIR__, 2) . '/config.php';
                     if (is_file($configFile)) {
-                        $raw = (array) require $configFile;
-                        unset($raw['DB_HOST'], $raw['DB_NAME'], $raw['DB_USER'], $raw['DB_PASS']);
-                        self::writeConfig($raw);
+                        $config = (array) require $configFile;
+                        if (isset($config['plugins']['mysql'])) {
+                            unset($config['plugins']['mysql']);
+                        }
+                        self::writeMainConfig($configFile, $config);
                     }
 
                     // Clear the cached connection
@@ -138,39 +146,37 @@ class Plugin
     }
 
     // ----------------------------------------------------------------------------
-    // Read DB credentials from admin/config.php and return as a clean array.
+    // Read DB credentials from config.php plugins.mysql section.
     // ----------------------------------------------------------------------------
     private static function loadConfig(): array
     {
-        $configFile = self::configFile();
-        if (!is_file($configFile)) {
-            throw new \RuntimeException('Database config (admin/config.php) not found.');
-        }
-
-        $raw = (array) require $configFile;
+        $pluginConfig = Config::getPluginConfig('mysql', []);
 
         return [
-            'host' => (string) ($raw['DB_HOST'] ?? 'localhost'),
-            'name' => (string) ($raw['DB_NAME'] ?? ''),
-            'user' => (string) ($raw['DB_USER'] ?? 'root'),
-            'pass' => (string) ($raw['DB_PASS'] ?? ''),
+            'host' => (string) ($pluginConfig['host'] ?? 'localhost'),
+            'name' => (string) ($pluginConfig['name'] ?? ''),
+            'user' => (string) ($pluginConfig['user'] ?? 'root'),
+            'pass' => (string) ($pluginConfig['pass'] ?? ''),
         ];
     }
 
     // ----------------------------------------------------------------------------
-    // Absolute path to admin/config.php.
+    // Write the full config array to the main config.php file.
+    // Uses the same var_export_short format as save_config() in api.php.
     // ----------------------------------------------------------------------------
-    private static function configFile(): string
+    private static function writeMainConfig(string $configFile, array $config): void
     {
-        return dirname(__DIR__, 2) . '/admin/config.php';
-    }
+        // Use var_export_short if available (defined in admin/api.php),
+        // otherwise fall back to var_export
+        if (function_exists('var_export_short')) {
+            $export = "<?php\n\nreturn " . var_export_short($config) . ";\n";
+        } else {
+            $export = "<?php\n\nreturn " . var_export($config, true) . ";\n";
+        }
 
-    // ----------------------------------------------------------------------------
-    // Write the config array back to admin/config.php using var_export.
-    // ----------------------------------------------------------------------------
-    private static function writeConfig(array $config): void
-    {
-        $export = "<?php\n\nreturn " . var_export($config, true) . ";\n";
-        file_put_contents(self::configFile(), $export);
+        $result = file_put_contents($configFile, $export);
+        if ($result === false) {
+            throw new \RuntimeException('Could not write config.php');
+        }
     }
 }
