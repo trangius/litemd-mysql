@@ -118,6 +118,52 @@ class Plugin
     public static function register(): void
     {
         PluginRegistry::addService('database', [self::class, 'connect']);
+
+        // Settings sub-tab under Advanced
+        PluginRegistry::addAdvancedTab([
+            'slug'  => 'mysql',
+            'label' => 'MySQL',
+            'file'  => __DIR__ . '/admin/settings.php',
+        ]);
+
+        // API action for saving settings from the admin panel
+        PluginRegistry::addApiAction('mysql-settings-save', [self::class, 'apiSaveSettings'], 'POST');
+    }
+
+    // ----------------------------------------------------------------------------
+    // Save updated DB credentials from the admin settings panel.
+    // ----------------------------------------------------------------------------
+    public static function apiSaveSettings(array $payload = []): void
+    {
+        $host = trim((string) ($payload['host'] ?? '')) ?: 'localhost';
+        $name = trim((string) ($payload['name'] ?? ''));
+        $user = trim((string) ($payload['user'] ?? '')) ?: 'root';
+        $pass = (string) ($payload['pass'] ?? '');
+
+        if ($name === '') {
+            editor_error_response('Database name is required.', 400, 'saving MySQL settings');
+            return;
+        }
+
+        // Update config.php plugins.mysql section
+        $configFile = dirname(__DIR__, 2) . '/config.php';
+        $config = is_file($configFile) ? (array) require $configFile : [];
+        if (!isset($config['plugins'])) {
+            $config['plugins'] = [];
+        }
+        $config['plugins']['mysql'] = [
+            'host' => $host,
+            'name' => $name,
+            'user' => $user,
+            'pass' => $pass,
+        ];
+        self::writeMainConfig($configFile, $config);
+
+        // Clear cached connection so next request uses new credentials
+        self::$pdo = null;
+
+        editor_log('MySQL settings updated');
+        editor_json_response(['ok' => true]);
     }
 
     // ----------------------------------------------------------------------------
